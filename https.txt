@@ -1,0 +1,86 @@
+ server {
+     #监听443端口。443为知名端口号，主要用于HTTPS协议
+     listen       443 ssl;
+
+     #定义使用www.xx.com访问
+     server_name  www.helloworld.com;
+
+     #ssl证书文件位置(常见证书文件格式为：crt/pem)
+     ssl_certificate      cert.pem;
+     #ssl证书key位置
+     ssl_certificate_key  cert.key;
+
+     #ssl配置参数（选择性配置）
+     ssl_session_cache    shared:SSL:1m;
+     ssl_session_timeout  5m;
+     #数字签名，此处使用MD5
+     ssl_ciphers  HIGH:!aNULL:!MD5;
+     ssl_prefer_server_ciphers  on;
+
+     location / {
+         root   /root;
+         index  index.html index.htm;
+     }
+ }
+ 
+ 
+  # HTTPS server
+    server {
+        listen       80;
+        listen       443 ssl;
+        server_name  test.dooffe.com;
+        ssl on;
+
+        ssl_certificate      /usr/local/nginx/certs/1_test.dooffe.com_bundle.crt;
+        ssl_certificate_key  /usr/local/nginx/certs/2_test.dooffe.com.key;
+
+        ssl_session_cache    shared:SSL:1m;
+        ssl_session_timeout  5m;
+
+    #    ssl_ciphers  HIGH:!aNULL:!MD5;
+    #    ssl_prefer_server_ciphers  on;
+        if ($server_port = 80 ) {
+                return 301 https://$host$request_uri;
+        }
+        location / {
+            proxy_pass http://192.168.10.4:3000;
+        }
+        #让http请求重定向到https请求
+        error_page 497  https://$host$request_uri;
+    }
+	
+	
+	
+1.创建服务器证书密钥文件 server.key：
+openssl genrsa -des3 -out server.key 1024
+2.创建服务器证书的申请文件 server.csr
+openssl req -new -key server.key -out server.csr
+3.去除文件口令
+openssl rsa -in server.key -out serverkey.pem
+4.生成证书文件server.crt
+openssl x509 -req -days 365 -in server.csr -signkey serverkey.pem -out server.crt
+
+
+#比起默认的80 使用了443 默认 是ssl方式  多出default之后的ssl
+        listen 443 default ssl;
+#default 可省略
+#开启  如果把ssl on；这行去掉，ssl写在443端口后面。这样http和https的链接都可以用
+        ssl on;
+#证书(公钥.发送到客户端的)
+        ssl_certificate ssl/server.crt;
+#私钥,
+        ssl_certificate_key ssl/server.key;
+
+
+自签名证书未认证，浏览器会有警告。
+
+
+openssl x509 -inform DES -in yourdownloaded.crt -out outcert.pem -text
+
+openssl s_client -showcerts -servername localhost -connect localhost:443 > filescert.pem
+openssl x509 -inform PEM -in certfile -text -out certdata
+curl_easy_setopt(curl, CURLOPT_CAPATH, capath);
+
+
+
+
