@@ -1,6 +1,13 @@
 #include <stdio.h>
 #include <string.h>
-//#include <time.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+
+__attribute__ ((constructor)) static void so_init(void);
+__attribute__ ((destructor)) static void so_deinit(void);
 
 typedef struct
 {
@@ -12,7 +19,9 @@ typedef struct
 	int second;
 }formattime;
 
+#ifndef __linux__
 typedef long long int time_t;
+#endif
 
 typedef unsigned short WORD;
 typedef struct _SYSTEMTIME {
@@ -26,8 +35,154 @@ typedef struct _SYSTEMTIME {
 	WORD wMilliseconds;
 } SYSTEMTIME, *PSYSTEMTIME, *LPSYSTEMTIME;
 
+#ifndef __linux__
+struct timeval
+{
+	time_t tv_sec; /* 秒 */
+	int tv_usec; /* 微秒 */
+};
+#endif
+
+struct timezone
+{
+	int tz_minuteswest; /* (minutes west of Greenwich) */
+	int tz_dsttime; /* (type of DST correction)*/
+};
+
+// struct stat {
+//     dev_t         st_dev;       //文件的设备编号
+//     ino_t         st_ino;       //节点
+//     mode_t        st_mode;      //文件的类型和存取的权限
+//     nlink_t       st_nlink;     //连到该文件的硬连接数目，刚建立的文件值为1
+//     uid_t         st_uid;       //用户ID
+//     gid_t         st_gid;       //组ID
+//     dev_t         st_rdev;      //(设备类型)若此文件为设备文件，则为其设备编号
+//     off_t         st_size;      //文件字节数(文件大小)
+//     unsigned long st_blksize;   //块大小(文件系统的I/O 缓冲区大小)
+//     unsigned long st_blocks;    //块数
+//     time_t        st_atime;     //最后一次访问时间
+//     time_t        st_mtime;     //最后一次修改时间
+//     time_t        st_ctime;     //最后一次改变时间(指属性)
+// };
+
+// struct utimbuf
+// {
+//     time_t actime;
+//     time_t modtime;
+// };
+
+// unistd.h
+// struct timespec
+// {
+// 	time_t tv_sec;
+// 	long tv_nsec;
+// };
+
+char g_timebuffer[64]={0};
+// char g_timebuffer1[32]= "2019-08-25 10:39:30";//星期日，正确
+// char g_timebuffer2[32]= "2000-1-1 10:39:30"; //星期六，正确
+// char g_timebuffer3[32]= "1752-09-02 10:39:30"; //星期六(有争议)
+// char g_timebuffer4[32]= "1752-09-14 10:39:30"; //星期四，正确
+// //下面不准
+// char g_timebuffer5[32]= "1-1-1 10:39:30"; //星期六，星期四(有争议)
+// char g_timebuffer6[32]= "1582-10-4 10:39:30"; //星期四,正确
+// char g_timebuffer7[32]= "1582-10-15 10:39:30"; //星期五,正确
+
+// char* gp_timebuffer;
+
+//cal 9 1752
+//东八区，时间比世界时快
+int time_zone = -8;
+
+#define TIMEHOOKFILE				"timehook.txt"
 #define SECONDS_OF_ONE_DAY 			(24*60*60)
 #define SECONDS_OF_ONE_HOUR			(60*60)
+
+int get_timehook_configpath(char* buf, int size)
+{
+	char* p = NULL;
+	char *pathvar = getenv("LD_PRELOAD");
+	if(NULL == pathvar)
+	{
+		printf("get env LD_PRELOAD error\n");
+		return 0;
+	}
+	int len = strlen(pathvar);
+	if(len + 1 > size)
+	{
+		printf("get_timehook_configpath buf size error: preload:%s, len:%d, size:%d\n", pathvar, len, size);
+		return -1;
+	}
+	snprintf(buf, len, "%s", pathvar); //拷贝n个字符，后面追加'\0'
+	p = buf+len;
+	while(*p != '/')
+	{
+		*p = '\0'; p--;
+	}
+	
+	return 0;
+}
+
+
+ssize_t timeread(int fd, void * buf, size_t count)
+{
+	int len=0;
+	int ret;
+	do
+	{
+		ret = read(fd, buf + len, count - len);
+		if(ret > 0)
+		{
+			len += ret;
+		}
+		//已经读到文件尾了
+		if(0 == ret)
+		{
+			break;
+		}
+		//EBADF
+		//printf("bad file descriptor\n");
+	}while(((-1 == ret) && (errno == EAGAIN || errno == EINTR)) || (len < count));
+	
+	return len;
+}
+
+void timestrim(void *buf)
+{
+	char* p = buf;
+	if(NULL == p)return;
+	while(*p != '\0' && *p != '\n' && *p != '\r')p++;
+	if('\n' == *p)*p = '\0';
+	if('\r' == *p)*p = '\0';
+}
+
+static void so_init(void)
+{
+	char buf[128]={0};
+	char file[256]={0};
+	int len;
+	(void)get_timehook_configpath(file,sizeof(file));
+	strcat(file, TIMEHOOKFILE);
+    //printf("config file:%s\n", file);
+	int fd = open(file, O_RDONLY, 0640);
+	if(fd < 0)
+	{
+		printf("timehook file:%s is not exists\n", file);
+		return;
+	}
+	len = timeread(fd, buf, sizeof(buf)-1);
+	if(len > 1)
+	{
+		timestrim(buf);
+		sprintf(g_timebuffer, "%s", buf);
+	}
+	close(fd);
+}
+
+static void so_deinit(void)
+{
+    //printf("call so deinit.\n");
+}
 
 int is_leap_year(int year)
 {
@@ -162,7 +317,6 @@ int get_formattime_fromsecond(time_t t, formattime* f)
 	return 0;
 }
 
-
 //2010-11-15 10:39:30
 int str2time(const char* str, formattime* ft)
 {
@@ -176,50 +330,20 @@ int time2str(formattime* ft, char* str)
 	return 0;
 }
 
-char g_timebuffer1[32]= "2019-08-25 10:39:30";//星期日，正确
-char g_timebuffer2[32]= "2000-1-1 10:39:30"; //星期六，正确
-char g_timebuffer3[32]= "1752-09-02 10:39:30"; //星期六(有争议)
-char g_timebuffer4[32]= "1752-09-14 10:39:30"; //星期四，正确
-
-//下面不准
-char g_timebuffer5[32]= "1-1-1 10:39:30"; //星期六，星期四(有争议)
-char g_timebuffer6[32]= "1582-10-4 10:39:30"; //星期四,正确
-char g_timebuffer7[32]= "1582-10-15 10:39:30"; //星期五,正确
-
-char* gp_timebuffer;
-
-//cal 9 1752
-
-
-//东八区，时间比世界时快
-int time_zone = -8;
-
 time_t time(time_t *t)
 {
 	time_t tt;
 	formattime ft;
 	
-	str2time(g_timebuffer1, &ft);
-	tt = get_seconds_since1970(ft.year, ft.month, ft.day, ft.hour, ft.minute, ft.second) + (time_zone * SECONDS_OF_ONE_HOUR);
+	str2time(g_timebuffer, &ft);
+	tt = get_seconds_since1970(ft.year, ft.month, ft.day, ft.hour, ft.minute, ft.second);// + (time_zone * SECONDS_OF_ONE_HOUR);
 	if(NULL != t)
 	{
 		*t = tt;
 	}
-	printf("time in hook\n");
+	// printf("time in hook\n");
 	return tt;
 }
-
-struct timeval
-{
-	time_t tv_sec; /* 秒 */
-	int tv_usec; /* 微秒 */
-};
-
-struct timezone
-{
-	int tz_minuteswest; /* (minutes west of Greenwich) */
-	int tz_dsttime; /* (type of DST correction)*/
-};
 
 int gettimeofday(struct timeval* tv,struct  timezone *tz )
 {
@@ -230,8 +354,8 @@ int gettimeofday(struct timeval* tv,struct  timezone *tz )
 		printf("gettimeofday tv null\n");
 		return -1;
 	}
-	str2time(g_timebuffer1, &ft);
-	tt = get_seconds_since1970(ft.year, ft.month, ft.day, ft.hour, ft.minute, ft.second) + (time_zone * SECONDS_OF_ONE_HOUR);
+	str2time(g_timebuffer, &ft);
+	tt = get_seconds_since1970(ft.year, ft.month, ft.day, ft.hour, ft.minute, ft.second);// + (time_zone * SECONDS_OF_ONE_HOUR);
 	tv->tv_sec = tt;
 	tv->tv_usec = 0;
 	if(NULL != tz)
@@ -239,7 +363,32 @@ int gettimeofday(struct timeval* tv,struct  timezone *tz )
 		tz->tz_minuteswest = -480;
 		tz->tz_dsttime = 0;
 	}
-	printf("gettimeofday in hook\n");
+	// printf("gettimeofday in hook\n");
+	return 0;
+}
+
+// CLOCK_MONOTONIC,单调时间,系统启动到现在的时间,单调的时间与设置无关
+// CLOCK_REALTIME, 墙上时间,1970年到现在的UTC,date命令会调用该接口
+// CLOCK_REALTIME:系统实时时间,随系统实时时间改变而改变
+// CLOCK_MONOTONIC,从系统启动这一刻起开始计时,不受系统时间被用户改变的影响
+// CLOCK_PROCESS_CPUTIME_ID,本进程到当前代码系统CPU花费的时间
+// CLOCK_THREAD_CPUTIME_ID,本线程到当前代码系统CPU花费的时间
+int clock_gettime(int clk_id, struct timespec* tp)
+{
+	time_t tt;
+	formattime ft;
+	(void)clk_id;
+	if(NULL == tp)
+	{
+		printf("clock_gettime tp null\n");
+		return -1;
+	}
+	str2time(g_timebuffer, &ft);
+	tt = get_seconds_since1970(ft.year, ft.month, ft.day, ft.hour, ft.minute, ft.second);// + (time_zone * SECONDS_OF_ONE_HOUR);
+	tp->tv_sec = tt;
+	tp->tv_nsec = 0;
+	
+	// printf("clock_gettime in hook\n");
 	return 0;
 }
 
@@ -247,7 +396,7 @@ void GetSystemTime(SYSTEMTIME* lpSystemTime)
 {
 	formattime ft;
 	
-	str2time(g_timebuffer1, &ft);
+	str2time(g_timebuffer, &ft);
 	lpSystemTime->wYear = ft.year;
 	lpSystemTime->wMonth = ft.month;
 	lpSystemTime->wDay = ft.day;
@@ -262,7 +411,7 @@ void GetLocalTime(SYSTEMTIME* lpSystemTime)
 {
 	formattime ft;
 	
-	str2time(g_timebuffer1, &ft);
+	str2time(g_timebuffer, &ft);
 	lpSystemTime->wYear = ft.year;
 	lpSystemTime->wMonth = ft.month;
 	lpSystemTime->wDay = ft.day;
@@ -339,12 +488,161 @@ int main()
 #endif
 
 
+int stat(const char *file_name, struct stat *buf)
+{
+	time_t tt;
+	formattime ft;
+	(void)file_name;
+	if(NULL == buf)
+	{
+		printf("stat buf null\n");
+		return -1;
+	}
+	str2time(g_timebuffer, &ft);
+	tt = get_seconds_since1970(ft.year, ft.month, ft.day, ft.hour, ft.minute, ft.second);
+	
+	memset(buf, 0, sizeof(struct stat));
+    buf->st_atime = tt;
+    buf->st_mtime = tt;
+    buf->st_ctime = tt;
+	
+	return 0;
+}
+
+int fstat(int filedes, struct stat *buf)
+{
+	time_t tt;
+	formattime ft;
+	(void)filedes;
+	if(NULL == buf)
+	{
+		printf("fstat buf null\n");
+		return -1;
+	}
+	str2time(g_timebuffer, &ft);
+	tt = get_seconds_since1970(ft.year, ft.month, ft.day, ft.hour, ft.minute, ft.second);
+	memset(buf, 0, sizeof(struct stat));
+    buf->st_atime = tt;
+    buf->st_mtime = tt;
+    buf->st_ctime = tt;
+	
+	return 0;
+}
+
+int lstat(const char * pathname, struct stat * buf)
+{
+	time_t tt;
+	formattime ft;
+	(void)pathname;
+	if(NULL == buf)
+	{
+		printf("lstat buf null\n");
+		return -1;
+	}
+	str2time(g_timebuffer, &ft);
+	tt = get_seconds_since1970(ft.year, ft.month, ft.day, ft.hour, ft.minute, ft.second);
+	
+	memset(buf, 0, sizeof(struct stat));
+    buf->st_atime = tt;
+    buf->st_mtime = tt;
+    buf->st_ctime = tt;
+	
+	return 0;
+}
+
+// 修改文件时间
+#if 0
+
+int utime(const char * filename, struct utimbuf * buf)
+{
+	time_t tt;
+	formattime ft;
+	(void)pathname;
+	if(NULL == buf)
+	{
+		printf("lstat buf null\n");
+		return -1;
+	}
+	str2time(g_timebuffer, &ft);
+	tt = get_seconds_since1970(ft.year, ft.month, ft.day, ft.hour, ft.minute, ft.second);
+	
+    buf->st_atime = tt;
+    buf->st_mtime = tt;
+    buf->st_ctime = tt;
+	
+	return 0;
+}
+
+int futimes(int fd, const struct timeval tv[2])
+{
+	time_t tt;
+	formattime ft;
+	(void)pathname;
+	if(NULL == buf)
+	{
+		printf("lstat buf null\n");
+		return -1;
+	}
+	str2time(g_timebuffer, &ft);
+	tt = get_seconds_since1970(ft.year, ft.month, ft.day, ft.hour, ft.minute, ft.second);
+	
+    buf->st_atime = tt;
+    buf->st_mtime = tt;
+    buf->st_ctime = tt;
+	
+	return 0;
+}
+
+int utimes(const char *filename, const struct timeval times[2])
+{
+	time_t tt;
+	formattime ft;
+	(void)pathname;
+	if(NULL == buf)
+	{
+		printf("lstat buf null\n");
+		return -1;
+	}
+	str2time(g_timebuffer, &ft);
+	tt = get_seconds_since1970(ft.year, ft.month, ft.day, ft.hour, ft.minute, ft.second);
+	
+    buf->st_atime = tt;
+    buf->st_mtime = tt;
+    buf->st_ctime = tt;
+	
+	return 0;
+}
+
+int lutimes(const char *filename, const struct timeval tv[2])
+{
+	time_t tt;
+	formattime ft;
+	(void)filename;
+	if(NULL == buf)
+	{
+		printf("lstat buf null\n");
+		return -1;
+	}
+	str2time(g_timebuffer, &ft);
+	tt = get_seconds_since1970(ft.year, ft.month, ft.day, ft.hour, ft.minute, ft.second);
+	
+	tv[0].tv_sec = tt;
+	tv[0].tv_usec = 0;
+    tv[1].tv_sec = tt;
+	tv[1].tv_usec = 0;
+	
+	return 0;
+}
+
+#endif
 
 //gcc -shared -fpic -o timehook.so timehook.c //-fpermissive
 
 //export LD_PRELOAD="/home/wzugang/time/timehook.so"
 
 //export LD_PRELOAD="/desktop/httptools/curl/timehook.so"
+
+//时间戳与校验和不一致
 
 
 
